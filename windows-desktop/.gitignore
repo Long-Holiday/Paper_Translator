@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+build/
+build-*/
+dist/
+.pytest_cache/
+:memory:.ses
