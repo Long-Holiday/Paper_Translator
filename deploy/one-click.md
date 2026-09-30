@@ -35,6 +35,31 @@ bash start.sh install   # 仅安装与初始化，运行中的服务不能执行
 
 日志保存在 `data/logs/server.log`；启动时超过 10 MiB 的日志会轮转，保留三份历史文件。PID 记录位于 `data/run/server.json`，脚本会验证进程身份，避免误停止 PID 被复用后的其他服务。启动失败会清理刚创建的后台进程。
 
+## 翻译时报 `TextTranslateRequest` 导入失败
+
+GCP 等云服务器也可能遇到这个 Python 依赖问题。`pdf2zh==1.9.11` 加载时会导入腾讯云 TMT SDK，即使使用 DeepSeek 或 OpenAI。新版 SDK 移除了 `TextTranslateRequest` / `TextTranslateResponse`，会导致整个翻译引擎无法加载。
+
+项目已在 `backend/requirements.txt` 固定兼容版本 `tencentcloud-sdk-python-tmt==3.0.999`（它会同时安装匹配的 common SDK）。同步修复后的项目文件到服务器，再执行：
+
+```bash
+bash start.sh update
+```
+
+启动脚本会检查这些 SDK 类能否导入，并在安装后再次检查；检查失败时不会写入依赖安装完成标记。
+
+尚未同步代码时，可在服务器项目根目录临时修复现有 `.venv-server`：
+
+```bash
+bash start.sh stop
+uv pip install --python .venv-server/bin/python 'tencentcloud-sdk-python-tmt==3.0.999'
+.venv-server/bin/python -c 'from tencentcloud.tmt.v20180321.models import TextTranslateRequest, TextTranslateResponse; from tencentcloud.tmt.v20180321.tmt_client import TmtClient; print("TMT SDK OK")'
+bash start.sh start
+```
+
+如果 `uv` 不在 PATH 中，将安装命令中的 `uv` 换成 `.tools/bin/uv`。后续仍需同步修复后的依赖文件，以防重新安装时再次升级到不兼容版本。
+
+## 后台运行与自启
+
 此方式支持断开 SSH 后运行；机器重启或服务崩溃后不会自动启动。需要开机自启和崩溃重启时，先用脚本完成安装，再 `bash start.sh stop`，然后采用 `deploy/paper-translator.service`，避免同时运行两套启动方式。
 
 ## 兼顾速度的默认配置

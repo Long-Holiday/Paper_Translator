@@ -156,7 +156,7 @@ class ManagerTests(unittest.TestCase):
         manager.stop(self.project)
         self.assertFalse(state.exists())
 
-    def test_shell_bootstrap_uses_uv_and_reuses_unchanged_artifacts(self):
+    def configure_shell_bootstrap(self):
         shutil.copy(ROOT / "start.sh", self.project / "start.sh")
         (self.project / "deploy").mkdir()
         shutil.copy(ROOT / "deploy/server_manager.py", self.project / "deploy/server_manager.py")
@@ -172,9 +172,22 @@ class ManagerTests(unittest.TestCase):
         python.parent.mkdir(parents=True)
         # Simulate a Python 3.11 installation; delegate helper execution to the
         # test interpreter. No real installer or package manager is invoked.
-        python.write_text("#!/bin/bash\nif [[ ${1:-} == -c ]]; then exit 0; fi\nexec " + json.dumps(sys.executable) + ' "$@"\n')
+        python.write_text('''#!/bin/bash
+if [[ ${1:-} == -c ]]; then
+    if [[ $2 == *TextTranslateRequest* && -f "$PT_TEST_SDK_BROKEN" ]]; then
+        echo "ImportError: cannot import name 'TextTranslateRequest'" >&2
+        exit 1
+    fi
+    exit 0
+fi
+exec ''' + json.dumps(sys.executable) + ' "$@"\n')
         commands = {
-            "uv": '#!/bin/bash\nprintf "%s\\n" "$*" >> "$PT_TEST_CALLS"\n',
+            "uv": '''#!/bin/bash
+printf "%s\\n" "$*" >> "$PT_TEST_CALLS"
+if [[ $1 == pip && $2 == install && ${PT_TEST_REPAIR_SDK:-0} == 1 ]]; then
+    rm -f "$PT_TEST_SDK_BROKEN"
+fi
+''',
             "node": "#!/bin/bash\nexit 0\n",
             "npm": '#!/bin/bash\nprintf "npm %s\\n" "$*" >> "$PT_TEST_CALLS"\nif [[ $1 == run ]]; then mkdir -p dist; echo built >dist/index.html; fi\n',
         }
@@ -185,19 +198,49 @@ class ManagerTests(unittest.TestCase):
             path.chmod(0o755)
         calls = self.project / "calls.txt"
         env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
-               "PT_SKIP_SYSTEM_PACKAGES": "1", "PT_TEST_CALLS": str(calls)}
+               "PT_SKIP_SYSTEM_PACKAGES": "1", "PT_TEST_CALLS": str(calls),
+               "PT_TEST_SDK_BROKEN": str(self.project / "broken-sdk")}
+        return calls, env
+
+    def run_shell_install(self, env):
+        return subprocess.run(["bash", str(self.project / "start.sh"), "install"], env=env,
+                              capture_output=True, text=True, timeout=15)
+
+    def test_shell_bootstrap_uses_uv_and_reuses_unchanged_artifacts(self):
+        calls, env = self.configure_shell_bootstrap()
         for _ in range(2):
-            result = subprocess.run(["bash", str(self.project / "start.sh"), "install"], env=env,
-                                    capture_output=True, text=True, timeout=15)
+            result = self.run_shell_install(env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         recorded = calls.read_text().splitlines()
         self.assertEqual(sum(line.startswith("pip install --no-cache --python") for line in recorded), 1)
         self.assertEqual(sum(line == "npm run build" for line in recorded), 1)
-        (frontend / "src/app.tsx").write_text("changed")
-        result = subprocess.run(["bash", str(self.project / "start.sh"), "install"], env=env,
-                                capture_output=True, text=True, timeout=15)
+        (self.project / "frontend/src/app.tsx").write_text("changed")
+        result = self.run_shell_install(env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls.read_text().count("npm run build"), 2)
+
+    def test_cached_dependencies_with_broken_sdk_are_reinstalled(self):
+        calls, env = self.configure_shell_bootstrap()
+        result = self.run_shell_install(env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        Path(env["PT_TEST_SDK_BROKEN"]).touch()
+        result = self.run_shell_install({**env, "PT_TEST_REPAIR_SDK": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls.read_text().count("pip install --no-cache --python"), 2)
+        self.assertEqual(calls.read_text().count("npm run build"), 1)
+        self.assertFalse(Path(env["PT_TEST_SDK_BROKEN"]).exists())
+
+    def test_metadata_check_passing_does_not_hide_broken_sdk_after_install(self):
+        calls, env = self.configure_shell_bootstrap()
+        Path(env["PT_TEST_SDK_BROKEN"]).touch()
+        result = self.run_shell_install(env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TextTranslateRequest", result.stderr)
+        self.assertIn("翻译依赖导入检查失败", result.stderr)
+        self.assertIn("pip check --python", calls.read_text())
+        self.assertNotIn("npm run build", calls.read_text())
+        self.assertFalse((self.project / "data/run/backend-deps.sha256").exists())
+        self.assertFalse((self.project / "data/run/server.json").exists())
 
 
 if __name__ == "__main__":

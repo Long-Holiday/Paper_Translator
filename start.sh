@@ -113,6 +113,17 @@ install_system_packages() {
     touch "$PT_TOOLS/system-deps-v1"
 }
 
+backend_dependencies_ready() {
+    "$PT_VENV/bin/python" -c '
+import fastapi, uvicorn, sqlalchemy, yaml, fitz, multipart, requests, aiofiles
+import importlib.metadata as m
+assert m.version("pdf2zh") == "1.9.11"
+from tencentcloud.common import credential
+from tencentcloud.tmt.v20180321.models import TextTranslateRequest, TextTranslateResponse
+from tencentcloud.tmt.v20180321.tmt_client import TmtClient
+'
+}
+
 install_uv_and_python() {
     echo '[2/5] 准备 uv 和独立 Python 3.11 环境...'
     export UV_CACHE_DIR="$PT_ROOT/data/cache/uv"
@@ -142,10 +153,15 @@ install_uv_and_python() {
     PT_BACKEND_HASH="$(sha256sum backend/requirements.txt | cut -d ' ' -f 1):$("$PT_VENV/bin/python" -c 'import sys; print(sys.version.split()[0])')"
     if [[ "${PT_FORCE_INSTALL:-0}" == 1 || ! -f data/run/backend-deps.sha256 ]] || \
             [[ "$(cat data/run/backend-deps.sha256)" != "$PT_BACKEND_HASH" ]] || \
-            ! "$PT_VENV/bin/python" -c 'import fastapi, uvicorn, sqlalchemy, yaml, fitz, multipart, requests, aiofiles; import importlib.metadata as m; assert m.version("pdf2zh") == "1.9.11"' 2>/dev/null; then
+            ! backend_dependencies_ready 2>/dev/null; then
         echo '[3/5] 使用 uv 安装 Python 依赖...'
         "$PT_UV" pip install --no-cache --python "$PT_VENV/bin/python" -r backend/requirements.txt
         "$PT_UV" pip check --python "$PT_VENV/bin/python"
+        # pip check validates metadata only; it cannot detect removed SDK classes.
+        if ! backend_dependencies_ready; then
+            echo '翻译依赖导入检查失败，请检查上方错误；依赖未标记为安装完成。' >&2
+            return 1
+        fi
         printf '%s\n' "$PT_BACKEND_HASH" >data/run/backend-deps.sha256
     else
         echo '[3/5] Python 依赖已就绪。'

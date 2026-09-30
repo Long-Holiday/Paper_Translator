@@ -7,5 +7,8 @@ pyyaml>=6.0.1
 pymupdf>=1.24.0
 # CPU layout adapter is verified against this version's OnnxModel interface.
 pdf2zh==1.9.11
+# pdf2zh imports TextTranslateRequest/Response even for non-Tencent engines.
+# Newer TMT SDK releases removed these classes; this version retains them.
+tencentcloud-sdk-python-tmt==3.0.999
 requests>=2.31.0
 aiofiles>=23.2.1
