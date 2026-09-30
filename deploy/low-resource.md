@@ -1,4 +1,6 @@
-# 单人使用：共享 CPU / 1 GB 内存部署
+# 单人使用：共享 CPU / 1 GB 内存 + Swap 部署
+
+Debian 一键安装与后台启动请使用 `bash start.sh`，详见 [一键启动说明](one-click.md)。
 
 系统默认只运行一个 API 进程，翻译任务串行排队。每个任务启动独立子进程，完成、报错或超时后退出，释放 ONNX 与 PDF 库占用的内存。不要使用 Uvicorn 多 worker：任务队列在进程内，多 worker 会重复运行模型并互相干扰任务状态。
 
@@ -7,14 +9,15 @@
 | 项目 | 默认值 | 环境变量 |
 | --- | --- | --- |
 | ONNX / 数学库 CPU 线程 | 1 | `PT_CPU_THREADS` |
-| 文本翻译并发 | 1 | `PT_MAX_TRANSLATION_THREADS` |
-| 每批处理页数 | 2 | `PT_TRANSLATION_BATCH_PAGES` |
-| 运行及排队任务总数 | 3 | `PT_MAX_PENDING_TASKS` |
-| 单文件大小 | 20 MiB | `PT_MAX_UPLOAD_MB` |
-| 单文件页数 | 200 | `PT_MAX_PDF_PAGES` |
-| 单任务超时（包含下载模型） | 1800 秒 | `PT_TRANSLATION_TIMEOUT_SECONDS` |
-| Docker 内存上限（API + 子进程） | 768 MiB | `PT_CONTAINER_MEMORY` |
-| Docker CPU 配额 | 0.75 核 | `PT_CONTAINER_CPUS` |
+| 文本翻译并发 | 4 | `PT_MAX_TRANSLATION_THREADS` |
+| 每批处理页数 | 5 | `PT_TRANSLATION_BATCH_PAGES` |
+| 运行及排队任务总数 | 10 | `PT_MAX_PENDING_TASKS` |
+| 单文件大小 | 100 MiB | `PT_MAX_UPLOAD_MB` |
+| 单文件页数 | 1000 | `PT_MAX_PDF_PAGES` |
+| 单任务超时（包含下载模型） | 7200 秒 | `PT_TRANSLATION_TIMEOUT_SECONDS` |
+| Docker 内存上限（API + 子进程） | 1 GiB | `PT_CONTAINER_MEMORY` |
+| Docker RAM + Swap 总上限 | 5 GiB | `PT_CONTAINER_MEMORY_SWAP` |
+| Docker CPU 配额 | 1 核 | `PT_CONTAINER_CPUS` |
 
 前七项也可在 `config/config.yaml` 的 `resources` 中设置。环境变量优先；文本翻译线程取 Web 设置与服务器上限的较小值。若平台只分配 0.25 核，把 `PT_CONTAINER_CPUS` 调为 `0.25`，同时按论文长度增加超时。
 
@@ -24,7 +27,7 @@
 
 ## 方案一：原生 Python + 预构建前端
 
-适合希望少装服务的服务器。服务器上不需要 Node.js、Vite 或本地大语言模型。
+适合希望少装服务的服务器。手动上传预构建前端时，服务器上不需要 Node.js、Vite 或本地大语言模型。
 
 在开发机器构建前端：
 
@@ -40,17 +43,17 @@ npm run build
 
 ```bash
 cd /opt/Paper_Translator
-python3 -m venv .venv
-.venv/bin/python -m pip install --no-cache-dir -r backend/requirements.txt
+uv venv --python 3.11 .venv-server
+uv pip install --no-cache --python .venv-server/bin/python -r backend/requirements.txt
 ```
 
 首次部署时，复制 `.env.example` 为 `.env` 并填写密码及翻译 API 密钥。若没有 `config/config.yaml`，可使用 `config/config.example.yaml`；请保留已有配置。翻译服务使用远程 API，1 GB 机器不适合同时运行 Ollama 模型。
 
 ```bash
-.venv/bin/python start.py --no-browser --skip-frontend-build
+.venv-server/bin/python start.py --no-browser --skip-frontend-build
 ```
 
-生产自启使用 `deploy/paper-translator.service`。修改 `WorkingDirectory`、`ExecStart` 和 `User` 对应的路径；访问密码可以放在 `.env` 中，并删除模板里的占位 `Environment=PAPER_TRANSLATOR_PASSWORD=...`（系统环境优先于 `.env`）。模板限制整个服务为 768 MiB / 75% CPU，必要时修改 `MemoryMax` / `CPUQuota` / `TimeoutStopSec`。
+生产自启使用 `deploy/paper-translator.service`。修改 `WorkingDirectory`、`ExecStart` 和 `User` 对应的路径；访问密码可以放在 `.env` 中，并删除模板里的占位 `Environment=PAPER_TRANSLATOR_PASSWORD=...`（系统环境优先于 `.env`）。模板限制整个服务为 1 GiB RAM + 最多 4 GiB Swap、100% CPU，必要时修改 `MemoryMax` / `MemorySwapMax` / `CPUQuota` / `TimeoutStopSec`。
 
 ```bash
 sudo cp deploy/paper-translator.service /etc/systemd/system/
@@ -63,7 +66,7 @@ sudo journalctl -u paper-translator -n 50
 
 ## 方案二：Docker 镜像在开发机器构建
 
-不要在 1 GB 服务器上执行前端编译或完整镜像构建。开发机器需与服务器使用相同 CPU 架构；不同架构应使用对应的构建目标。
+在有 Swap 的服务器上，一键脚本支持本机构建前端；完整 Docker 镜像仍建议在开发机器构建。开发机器需与服务器使用相同 CPU 架构；不同架构应使用对应的构建目标。
 
 开发机器：
 
@@ -83,11 +86,11 @@ docker stats --no-stream paper-translator
 
 Compose 已限制 CPU、内存、进程数及日志大小，并挂载数据、配置与 `.env`。`.dockerignore` 排除真实密钥、历史论文、虚拟环境与前端依赖，镜像使用无密钥的示例配置。镜像和模型缓存仍会占用磁盘空间，应为依赖、论文与临时输出预留空间。
 
-可直接通过 8080 端口访问；若使用 Nginx，使用 `deploy/nginx.conf`。上传限制是 21 MiB 请求体（包含 multipart 头），应用再检查 20 MiB 文件大小；调整文件上限时也需调整 Nginx。SSE 必须关闭缓冲，静态 assets 可长期缓存。
+可直接通过 8080 端口访问；若使用 Nginx，使用 `deploy/nginx.conf`。上传限制是 101 MiB 请求体（包含 multipart 头），应用再检查 100 MiB 文件大小；调整文件上限时也需调整 Nginx。SSE 必须关闭缓冲，静态 assets 可长期缓存。
 
 ## 已完成的验证与边界
 
-开发环境实测：API 导入峰值 RSS 约 **93 MiB**，未加载 pdf2zh / ONNX；取现有论文前 5 页，以真实 ONNX 版面推理和 PDF 排版运行、用本地文本桩替代远程翻译，翻译进程峰值 RSS 约 **514 MiB**，输出通过逐页渲染校验。该数据不代表所有文档或目标服务器的峰值，也不包含真实 API 延迟。
+此前保守配置（每批 2 页、单翻译线程）在开发环境实测：API 导入峰值 RSS 约 **93 MiB**，未加载 pdf2zh / ONNX；取现有论文前 5 页，以真实 ONNX 版面推理和 PDF 排版运行、用本地文本桩替代远程翻译，翻译进程峰值 RSS 约 **514 MiB**，输出通过逐页渲染校验。该数据不代表所有文档或目标服务器的峰值，也不包含真实 API 延迟。
 
 回归测试覆盖串行队列容量、重复任务、提交失败、子进程崩溃/超时/停止与回收、临时目录清理、上传回滚、分批页序/元数据/目录保留、译文校验失败时保留旧文件及 SSE 状态通知。
 

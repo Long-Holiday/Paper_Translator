@@ -2,7 +2,7 @@
 
 基于 **PDFMathTranslate** 与 **FastAPI + React** 开发的学术论文高保真翻译与双栏对比阅读工具，支持本地及云端服务器自用部署。
 
-针对 **单人使用、共享 CPU、1 GB 内存**，已默认启用翻译进程隔离、每批 2 页、单线程、任务限流和临时输出清理。完整部署步骤、资源参数与实测数据见 [低资源服务器部署说明](deploy/low-resource.md)。
+针对 **单人使用、共享 CPU、1 GB 内存 + 8 GiB Swap**，默认采用独立翻译进程、4 个文本翻译线程、每批 5 页，并在完成后清理临时输出。Debian 可直接执行 `bash start.sh`，自动通过 uv 安装 Python 依赖、构建前端并后台运行。详见 [一键启动说明](deploy/one-click.md)。
 
 ---
 
@@ -17,7 +17,7 @@
 2. **数学公式与排版高保真翻译**
    - 深度集成 `PDFMathTranslate` / `pdf2zh` 翻译核心
    - 支持 DeepSeek, OpenAI, 智谱 GLM, 硅基流动, Ollama, Google/Bing 等多翻译服务
-   - 单用户串行任务队列，独立翻译子进程完成后释放模型内存，默认每批处理 2 页
+   - 单用户串行任务队列，独立翻译子进程完成后释放模型内存，默认每批处理 5 页
 
 3. **双栏对照阅读体验**
    - 原文与中文双栏并排显示
@@ -69,15 +69,19 @@ uv run python start.py
 
 ---
 
-### 方式二：Linux 服务器生产部署（1 GB / 单人推荐）
-
-在开发机器执行 `cd frontend && npm ci && npm run build`，将构建后的 `frontend/dist` 连同源码上传。在服务器安装 `backend/requirements.txt` 后运行：
+### 方式二：Debian 一键安装与后台启动（推荐）
 
 ```bash
-.venv/bin/python start.py --no-browser --skip-frontend-build
+bash start.sh          # 自动安装依赖、构建前端、后台启动
+bash start.sh status   # 查看状态
+bash start.sh logs     # 查看日志
+bash start.sh stop     # 停止
+bash start.sh restart  # 重启
 ```
 
-使用 `deploy/paper-translator.service` 开机自启，模板已限制整个服务的内存为 768 MiB、CPU 为 75%。如果使用 Nginx，采用 `deploy/nginx.conf`（包含上传限制、静态资源缓存及 SSE 防缓冲）。路径、密码配置与首次安装步骤见 [低资源服务器部署说明](deploy/low-resource.md)。
+Python 依赖统一使用 uv，服务采用独立 `.venv-server` 环境，默认端口 8080；首次密码保存在 `.env`，已有密码、API 密钥和端口会保留。配置已放宽为 4 个文本翻译线程、每批 5 页、100 MiB 上传和 2 小时超时，适合 1 GB RAM + 8 GiB Swap 的单人服务器。
+
+权限、首次安装、配置迁移与可选 systemd 自启见 [一键启动说明](deploy/one-click.md)。
 
 ### 方式三：Docker 部署
 
@@ -87,7 +91,7 @@ uv run python start.py
 docker compose up -d --no-build
 ```
 
-默认限制内存 768 MiB、CPU 0.75 核，并限制日志大小。详细步骤及可调整参数见 [低资源服务器部署说明](deploy/low-resource.md)。
+默认限制 1 GiB 内存、最多 4 GiB Swap、CPU 1 核，并限制日志大小。详细步骤及可调整参数见 [低资源服务器部署说明](deploy/low-resource.md)。
 
 ---
 
@@ -103,7 +107,7 @@ translation:
   model: "deepseek-chat"        # 模型名称
   api_key: "sk-xxxxxx"          # 填入您的 API Key
   base_url: "https://api.deepseek.com"
-  thread: 1                     # 并发翻译线程数，实际受 resources.max_translation_threads 限制
+  thread: 4                     # 并发翻译线程数，实际受 resources.max_translation_threads 限制
 ```
 
 ---
@@ -136,6 +140,7 @@ Paper_Translator/
 ├── docker-compose.yml        # Docker Compose 编排文件
 ├── data/                     # 本地 SQLite 数据库与论文 PDF 存储
 ├── config/config.yaml        # 翻译引擎配置文件
+├── start.sh                  # Debian 一键安装、后台启动、状态/日志/停止
 ├── start.py                  # 一键启动脚本（支持 --no-browser 与环境变量提示）
 └── README.md                 # 项目说明文档
 ```

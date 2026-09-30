@@ -16,10 +16,11 @@ services:
       - .env
     environment:
       - NO_BROWSER=1
-    # Includes API + spawned translation process. Leave room for the host OS.
-    mem_limit: ${PT_CONTAINER_MEMORY:-768m}
-    cpus: ${PT_CONTAINER_CPUS:-0.75}
-    pids_limit: 96
+    # API + spawned translation process; 5g is RAM + swap (up to 4g swap).
+    mem_limit: ${PT_CONTAINER_MEMORY:-1g}
+    memswap_limit: ${PT_CONTAINER_MEMORY_SWAP:-5g}
+    cpus: ${PT_CONTAINER_CPUS:-1.0}
+    pids_limit: 128
     init: true
     stop_grace_period: 15s
     logging:

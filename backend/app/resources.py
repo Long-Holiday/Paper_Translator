@@ -1,4 +1,4 @@
-"""Limits for the single-user, 1 GB deployment; PT_* overrides YAML."""
+"""Single-user limits for 1 GB RAM with swap; PT_* overrides YAML."""
 
 import os
 from dataclasses import dataclass, fields
@@ -9,12 +9,12 @@ from backend.app.config import load_config
 @dataclass(frozen=True)
 class ResourceLimits:
     cpu_threads: int = 1
-    max_translation_threads: int = 1
-    translation_batch_pages: int = 2
-    max_pending_tasks: int = 3  # Includes the running task.
-    max_upload_mb: int = 20
-    max_pdf_pages: int = 200
-    translation_timeout_seconds: int = 1800
+    max_translation_threads: int = 4
+    translation_batch_pages: int = 5
+    max_pending_tasks: int = 10  # Includes the running task.
+    max_upload_mb: int = 100
+    max_pdf_pages: int = 1000
+    translation_timeout_seconds: int = 7200
 
 
 def get_resource_limits() -> ResourceLimits:

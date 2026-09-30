@@ -154,6 +154,7 @@ class DatabaseTests(unittest.TestCase):
     def test_page_limit_rolls_back_database_and_files(self):
         with TemporaryDirectory() as directory, \
                 patch("backend.app.services.paper_service.PAPERS_DIR", Path(directory)), \
+                patch("backend.app.services.paper_service.get_resource_limits", return_value=ResourceLimits(max_pdf_pages=200)), \
                 patch("backend.app.services.paper_service.PdfService.extract_pdf_info", return_value=("test", 201)):
             with self.sessions() as db:
                 upload = UploadFile(io.BytesIO(b"%PDF-test"), filename="long.pdf")

@@ -148,7 +148,8 @@ class TranslationTests(unittest.TestCase):
 
             with patch("backend.app.services.translation_service.load_config",
                        return_value={"translation": {"service": "google", "model": "", "thread": 16}}), \
-                    patch("backend.app.services.translation_service.get_resource_limits", return_value=ResourceLimits()), \
+                    patch("backend.app.services.translation_service.get_resource_limits",
+                          return_value=ResourceLimits(translation_batch_pages=2, max_translation_threads=1)), \
                     patch.object(TranslationService, "get_layout_model", return_value=object()), \
                     patch.object(high_level, "translate", side_effect=translate_batch):
                 final = TranslationService().translate(source, output)

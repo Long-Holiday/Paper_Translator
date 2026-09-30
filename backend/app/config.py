@@ -103,7 +103,7 @@ def get_default_config() -> Dict[str, Any]:
             "model": "deepseek-chat",
             "api_key": "",
             "base_url": "https://api.deepseek.com",
-            "thread": 1,
+            "thread": 4,
             "preserve_layout": True,
         },
         "server": {
@@ -116,12 +116,12 @@ def get_default_config() -> Dict[str, Any]:
         },
         "resources": {
             "cpu_threads": 1,
-            "max_translation_threads": 1,
-            "translation_batch_pages": 2,
-            "max_pending_tasks": 3,
-            "max_upload_mb": 20,
-            "max_pdf_pages": 200,
-            "translation_timeout_seconds": 1800,
+            "max_translation_threads": 4,
+            "translation_batch_pages": 5,
+            "max_pending_tasks": 10,
+            "max_upload_mb": 100,
+            "max_pdf_pages": 1000,
+            "translation_timeout_seconds": 7200,
         },
     }
 

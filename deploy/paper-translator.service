@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/Paper_Translator
-ExecStart=/opt/Paper_Translator/.venv/bin/python start.py --no-browser --skip-frontend-build
+ExecStart=/opt/Paper_Translator/.venv-server/bin/python start.py --no-browser --skip-frontend-build
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -15,10 +15,10 @@ Environment=OMP_NUM_THREADS=1
 Environment=OPENBLAS_NUM_THREADS=1
 Environment=MKL_NUM_THREADS=1
 Environment=NUMEXPR_NUM_THREADS=1
-MemoryHigh=650M
-MemoryMax=768M
-CPUQuota=75%
-TasksMax=96
+MemoryMax=1G
+MemorySwapMax=4G
+CPUQuota=100%
+TasksMax=128
 TimeoutStopSec=15
 # Prefer killing a translation child to killing the API when memory runs out.
 OOMPolicy=continue
