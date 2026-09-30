@@ -1,11 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { Loader2, AlertCircle } from 'lucide-react';
-import { attachWheelPageNavigation } from './wheelPageNavigation';
+import { pageTop, scaledScrollTop } from './pdfLayout';
 
 interface Props {
   url: string;
   page: number;
+  navigationKey?: number;
   scale: number;
   title: string;
   onTotalPages?: (total: number) => void;
@@ -17,192 +18,186 @@ interface Props {
   fallbackMessage?: string;
 }
 
+interface PageSize { width: number; height: number }
+
+// 保留每页的完整占位，只渲染视口及附近的画布，避免长论文占用过多显存。
+const PdfCanvas: React.FC<{
+  doc: pdfjsLib.PDFDocumentProxy;
+  number: number;
+  scale: number;
+  size: PageSize;
+  container: React.RefObject<HTMLDivElement>;
+}> = ({ doc, number, scale, size, container }) => {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [visible, setVisible] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), {
+      root: container.current,
+      rootMargin: '150% 0px',
+    });
+    if (wrapperRef.current) observer.observe(wrapperRef.current);
+    return () => observer.disconnect();
+  }, [container]);
+
+  useEffect(() => {
+    if (!visible || !canvasRef.current) return;
+    let cancelled = false;
+    let task: pdfjsLib.RenderTask | undefined;
+    const canvas = canvasRef.current;
+    setError(false);
+    const render = async () => {
+      try {
+        const pdfPage = await doc.getPage(number);
+        if (cancelled) return;
+        const viewport = pdfPage.getViewport({ scale });
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
+        task = pdfPage.render({
+          canvasContext: context,
+          viewport,
+          transform: dpr === 1 ? undefined : [dpr, 0, 0, dpr, 0, 0],
+        });
+        await task.promise;
+      } catch (err: any) {
+        if (!cancelled && err.name !== 'RenderingCancelledException') setError(true);
+      }
+    };
+    void render();
+    return () => {
+      cancelled = true;
+      task?.cancel();
+    };
+  }, [doc, number, scale, visible]);
+
+  return (
+    <div ref={wrapperRef} data-page={number} className="relative shrink-0 bg-white"
+      style={{ width: size.width * scale, height: size.height * scale }}>
+      {visible && <canvas key={scale} ref={canvasRef} className="block w-full h-full" />}
+      {error && <p className="absolute inset-0 flex items-center justify-center text-sm text-rose-600">第 {number} 页加载失败</p>}
+    </div>
+  );
+};
+
 export const PdfViewer: React.FC<Props> = ({
-  url,
-  page,
-  scale,
-  title,
-  onTotalPages,
-  onPageChange,
-  onScroll,
-  onViewportReady,
-  className = '',
-  isFallback = false,
-  fallbackMessage,
+  url, page, navigationKey = 0, scale, title, onTotalPages, onPageChange,
+  onScroll, onViewportReady, className = '', isFallback = false, fallbackMessage,
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [document, setDocument] = useState<{ doc: pdfjsLib.PDFDocumentProxy; sizes: PageSize[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
-  const renderTaskRef = useRef<any>(null);
-  const renderReadyRef = useRef(false);
-  const lastRenderedPageRef = useRef(page);
-  const navigationRef = useRef({ page, onPageChange, onViewportReady });
-  navigationRef.current = { page, onPageChange, onViewportReady };
+  const callbacks = useRef({ page, onTotalPages, onPageChange, onScroll, onViewportReady });
+  callbacks.current = { page, onTotalPages, onPageChange, onScroll, onViewportReady };
+  const lastPage = useRef(page);
+  const lastScale = useRef(scale);
+  const frame = useRef<number>();
 
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container || isFallback) return;
-    return attachWheelPageNavigation(container, () => ({
-      page: navigationRef.current.page,
-      totalPages: pdfDocRef.current?.numPages ?? 0,
-      ready: renderReadyRef.current,
-    }), (nextPage) => navigationRef.current.onPageChange?.(nextPage));
-  }, [isFallback]);
-
-  // 1. 加载 PDF 基础文档
-  useEffect(() => {
-    if (isFallback) {
-      setLoading(false);
-      return;
-    }
-
-    let isMounted = true;
-    pdfDocRef.current = null;
-    renderReadyRef.current = false;
-    lastRenderedPageRef.current = page;
+    if (isFallback) { setLoading(false); return; }
+    let cancelled = false;
+    setDocument(null);
     setLoading(true);
     setError(null);
-
-    const loadingTask = pdfjsLib.getDocument({
+    const task = pdfjsLib.getDocument({
       url,
       cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/',
       cMapPacked: true,
     });
-
-    loadingTask.promise
-      .then((pdf) => {
-        if (!isMounted) return;
-        pdfDocRef.current = pdf;
-        if (onTotalPages) {
-          onTotalPages(pdf.numPages);
+    void (async () => {
+      try {
+        const doc = await task.promise;
+        const sizes: PageSize[] = [];
+        // 顺序读取页面尺寸，避免一次对长文档发起大量并发任务。
+        for (let number = 1; number <= doc.numPages; number++) {
+          if (cancelled) return;
+          const pdfPage = await doc.getPage(number);
+          const viewport = pdfPage.getViewport({ scale: 1 });
+          sizes.push({ width: viewport.width, height: viewport.height });
         }
+        if (cancelled) return;
+        callbacks.current.onTotalPages?.(doc.numPages);
+        setDocument({ doc, sizes });
         setLoading(false);
-      })
-      .catch((err) => {
-        if (!isMounted) return;
-        console.error(`[PdfViewer] 加载 PDF 失败 (${title}):`, err);
-        setError(err.message || '加载 PDF 文档失败');
-        setLoading(false);
-      });
-
-    return () => {
-      isMounted = false;
-      loadingTask.destroy();
-    };
+      } catch (err: any) {
+        if (!cancelled) { setError(err.message || '加载 PDF 文档失败'); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; void task.destroy(); };
   }, [url, isFallback]);
 
-  // 2. 渲染指定页码
-  useEffect(() => {
-    if (isFallback || !pdfDocRef.current || !canvasRef.current) return;
+  // 只有显式翻页才跳转；滚动产生的页码更新不会把视口拉回页顶。
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container || !document) return;
+    const target = Math.min(Math.max(1, callbacks.current.page), document.doc.numPages);
+    container.scrollTop = pageTop(document.sizes.map((size) => size.height), target, scale);
+    lastPage.current = target;
+    lastScale.current = scale;
+    callbacks.current.onViewportReady?.(container);
+  }, [document, navigationKey]);
 
-    let isCancelled = false;
-    renderReadyRef.current = false;
-    const doc = pdfDocRef.current;
-    const canvas = canvasRef.current;
-    const targetPage = Math.min(Math.max(1, page), doc.numPages);
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container || !document || scale === lastScale.current) return;
+    const ratio = scale / lastScale.current;
+    container.scrollTop = scaledScrollTop(document.sizes.map((size) => size.height), container.scrollTop, lastScale.current, scale);
+    container.scrollLeft *= ratio;
+    lastScale.current = scale;
+    callbacks.current.onViewportReady?.(container);
+  }, [scale, document]);
 
-    doc.getPage(targetPage).then((pageObj) => {
-      if (isCancelled) return;
+  useEffect(() => () => { if (frame.current !== undefined) cancelAnimationFrame(frame.current); }, []);
 
-      // 如果有之前的渲染任务在执行，先安全取消
-      if (renderTaskRef.current) {
-        try {
-          renderTaskRef.current.cancel();
-        } catch (_) {}
+  const handleScroll = (container: HTMLDivElement) => {
+    callbacks.current.onScroll?.(container);
+    if (frame.current !== undefined) cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(() => {
+      // 视口上部进入下一页时更新阅读页码，跨页过程中保持原生滚动。
+      const probe = container.getBoundingClientRect().top + Math.min(100, container.clientHeight / 4);
+      const pages = container.querySelectorAll<HTMLElement>('[data-page]');
+      let low = 0;
+      let high = pages.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (pages[middle].getBoundingClientRect().top <= probe) low = middle;
+        else high = middle - 1;
       }
-
-      const viewport = pageObj.getViewport({ scale });
-      const context = canvas.getContext('2d');
-      if (!context) return;
-
-      // 适配高清屏幕 (Retina / 2x display)
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(viewport.width * dpr);
-      canvas.height = Math.floor(viewport.height * dpr);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
-
-      context.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-      const renderContext = {
-        canvasContext: context,
-        viewport,
-      };
-
-      const task = pageObj.render(renderContext);
-      renderTaskRef.current = task;
-
-      task.promise
-        .then(() => {
-          if (isCancelled) return;
-          renderTaskRef.current = null;
-          // 向后翻页从页顶开始，向前翻页从页底继续，缩放时保留滚动位置。
-          if (containerRef.current && targetPage !== lastRenderedPageRef.current) {
-            containerRef.current.scrollTop = targetPage < lastRenderedPageRef.current
-              ? containerRef.current.scrollHeight
-              : 0;
-          }
-          lastRenderedPageRef.current = targetPage;
-          renderReadyRef.current = true;
-          if (containerRef.current) {
-            navigationRef.current.onViewportReady?.(containerRef.current);
-          }
-        })
-        .catch((err) => {
-          if (err.name !== 'RenderingCancelledException') {
-            console.error('[PdfViewer] 页面渲染错误:', err);
-          }
-        });
+      const visiblePage = Number(pages[low]?.dataset.page);
+      if (visiblePage && visiblePage !== lastPage.current) {
+        lastPage.current = visiblePage;
+        callbacks.current.onPageChange?.(visiblePage);
+      }
     });
+  };
 
-    return () => {
-      isCancelled = true;
-      renderReadyRef.current = false;
-      if (renderTaskRef.current) {
-        try {
-          renderTaskRef.current.cancel();
-        } catch (_) {}
-      }
-    };
-  }, [page, scale, loading, isFallback]);
-
-  if (isFallback) {
-    return (
-      <div className={`flex flex-col items-center justify-center p-8 text-center bg-slate-100/50 rounded-xl border border-dashed border-slate-300 ${className}`}>
-        <AlertCircle className="w-10 h-10 text-amber-500 mb-3" />
-        <h4 className="font-semibold text-slate-800 mb-1">{title} 暂未就绪</h4>
-        <p className="text-sm text-slate-500 max-w-sm">
-          {fallbackMessage || '论文尚未开始翻译或仍在翻译中，点击顶部的“开始翻译”即可生成中文版本。'}
-        </p>
-      </div>
-    );
-  }
+  if (isFallback) return (
+    <div className={`flex flex-col items-center justify-center p-8 text-center bg-white text-black ${className}`}>
+      <AlertCircle className="w-10 h-10 text-amber-500 mb-3" />
+      <h4 className="font-semibold text-black mb-1">{title} 暂未就绪</h4>
+      <p className="text-sm text-black max-w-sm">{fallbackMessage || '论文尚未开始翻译或仍在翻译中，点击顶部的“开始翻译”即可生成中文版本。'}</p>
+    </div>
+  );
 
   return (
-    <div
-      ref={containerRef}
-      onScroll={(event) => onScroll?.(event.currentTarget)}
-      className={`relative overflow-auto overscroll-contain bg-slate-200/60 p-4 min-h-0 rounded-xl select-none ${className}`}
-    >
-      {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white/70 backdrop-blur-sm z-10">
-          <Loader2 className="w-8 h-8 animate-spin text-sky-600" />
-          <span className="ml-2 text-sm text-slate-600 font-medium">正在加载 {title}...</span>
-        </div>
-      )}
-
-      {error ? (
-        <div className="flex flex-col items-center justify-center p-12 text-center text-rose-600">
-          <AlertCircle className="w-10 h-10 mb-2" />
-          <p className="text-sm font-semibold">{error}</p>
-        </div>
-      ) : (
-        <div className="w-max mx-auto shadow-xl bg-white border border-slate-300 rounded overflow-hidden">
-          <canvas ref={canvasRef} className="block" />
-        </div>
-      )}
+    <div ref={containerRef} onScroll={(event) => handleScroll(event.currentTarget)}
+      className={`relative overflow-auto overscroll-contain bg-white text-black p-0 min-h-0 select-none ${className}`}
+      style={{ overflowAnchor: 'none' }}>
+      {loading && <div className="absolute inset-0 flex items-center justify-center bg-white/70 z-10">
+        <Loader2 className="w-8 h-8 animate-spin text-sky-600" />
+        <span className="ml-2 text-sm text-black font-medium">正在加载 {title}...</span>
+      </div>}
+      {error ? <div className="flex flex-col items-center justify-center p-12 text-center text-rose-600">
+        <AlertCircle className="w-10 h-10 mb-2" /><p className="text-sm font-semibold">{error}</p>
+      </div> : document && <div className="flex flex-col items-center w-max min-w-full gap-3">
+        {document.sizes.map((size, index) => <PdfCanvas key={index} doc={document.doc} number={index + 1}
+          scale={scale} size={size} container={containerRef} />)}
+      </div>}
     </div>
   );
 };

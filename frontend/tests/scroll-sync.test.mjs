@@ -52,38 +52,42 @@ test('asynchronous scroll events from the synchronized column do not feed back a
   assert.equal(original.scrollTop, 240);
 });
 
-test('forward page changes reset both columns to the top, ignoring scroll events during rendering', () => {
+test('crossing a page boundary preserves continuous scrolling and synchronization', () => {
   const { sync, original, translated } = reader();
-  original.scrollTop = 600;
+  original.scrollTop = 300;
   sync.scroll('original', original);
   sync.setView(3, 1.2);
+  assert.equal(original.scrollTop, 300);
+  assert.equal(translated.scrollTop, 500);
+  original.scrollTop = 360;
+  sync.scroll('original', original);
+  assert.equal(translated.scrollTop, 600);
+  sync.setView(2, 1.2);
+  translated.scrollTop = 400;
   sync.scroll('translated', translated);
-  sync.ready('original', original);
-  assert.equal(original.scrollTop, 0);
-  assert.equal(translated.scrollTop, 1000);
-  sync.scroll('translated', translated);
-  sync.ready('translated', translated);
-  assert.equal(translated.scrollTop, 0);
+  assert.equal(original.scrollTop, 240);
 });
 
-test('backward page changes position both columns at their respective bottoms', () => {
+test('explicit jumps adopt the requested document position after both layouts are ready', () => {
   const { sync, original, translated } = reader();
-  sync.setView(1, 1.2);
-  original.scrollHeight = 1200;
-  translated.scrollHeight = 1600;
-  sync.ready('translated', translated);
+  sync.setView(3, 1.2, 1);
+  translated.scrollTop = 900;
+  sync.scroll('translated', translated);
+  original.scrollTop = 240;
   sync.ready('original', original);
-  assert.equal(original.scrollTop, 800);
-  assert.equal(translated.scrollTop, 1200);
+  sync.ready('translated', translated);
+  assert.equal(original.scrollTop, 240);
+  assert.equal(translated.scrollTop, 400);
 });
 
-test('zoom retains reading progress regardless of which column finishes rendering first', () => {
+test('zoom adopts the restored position and synchronizes the second layout', () => {
   const { sync, original, translated } = reader();
   translated.scrollTop = 500;
   sync.scroll('translated', translated);
   sync.setView(2, 1.5);
   original.scrollHeight = 1600;
   translated.scrollHeight = 2000;
+  translated.scrollTop = 800;
   sync.ready('translated', translated);
   sync.ready('original', original);
   assert.equal(original.scrollTop, 600);
@@ -127,4 +131,15 @@ test('overscroll stays within bounds and stale viewport events are ignored', () 
   oldOriginal.scrollTop = 600;
   sync.scroll('original', oldOriginal);
   assert.equal(translated.scrollTop, 0);
+});
+
+test('initial saved page position is preserved when the other column loads', () => {
+  const sync = createScrollSync(5, 1.2);
+  const original = viewport(1000);
+  const translated = viewport(1400);
+  original.scrollTop = 300;
+  sync.ready('original', original);
+  sync.ready('translated', translated);
+  assert.equal(original.scrollTop, 300);
+  assert.equal(translated.scrollTop, 500);
 });

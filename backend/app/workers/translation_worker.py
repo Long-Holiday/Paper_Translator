@@ -31,11 +31,14 @@ def _run_translation_job(paper_id: int):
 
         def on_progress(percent: int, message: str = ""):
             nonlocal paper_id
+            # 100% 与 completed、译文路径一起提交，避免先显示完成再发布文件。
+            if percent >= 100:
+                return
             job_db = SessionLocal()
             try:
                 p = job_db.query(Paper).filter(Paper.id == paper_id).first()
-                if p:
-                    p.translation_progress = percent
+                if p and p.translation_status == "translating":
+                    p.translation_progress = max(p.translation_progress, min(99, max(0, percent)))
                     job_db.commit()
             finally:
                 job_db.close()

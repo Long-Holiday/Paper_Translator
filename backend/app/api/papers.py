@@ -1,13 +1,13 @@
 from pathlib import Path
 from typing import List, Optional
-from fastapi import APIRouter, Depends, UploadFile, File, Query, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Depends, UploadFile, File, Query, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.schemas import PaperResponse, ReadingPositionUpdate, TranslateResponse
 from backend.app.services.paper_service import PaperService
-from backend.app.services.translation_updates import stream_translation_updates
+from backend.app.services.translation_updates import get_translation_snapshot
 from backend.app.workers.translation_worker import enqueue_translation
 
 router = APIRouter(prefix="/papers", tags=["papers"])
@@ -31,14 +31,10 @@ async def upload_paper(
     return await PaperService.create_paper(db=db, file=file)
 
 
-@router.get("/events")
-async def translation_events(request: Request, ids: List[int] = Query(...)):
-    """订阅指定论文的翻译进度，避免前端反复请求完整论文列表。"""
-    return StreamingResponse(
-        stream_translation_updates(request, sorted(set(ids))),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+@router.get("/updates")
+async def translation_updates(ids: List[int] = Query(...)):
+    """批量查询指定论文的最新翻译状态，供本地前端轮询。"""
+    return get_translation_snapshot(sorted(set(ids)))
 
 
 @router.get("/{paper_id}", response_model=PaperResponse)

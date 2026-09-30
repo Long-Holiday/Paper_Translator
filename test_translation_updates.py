@@ -1,16 +1,17 @@
-"""SSE 回归测试；使用独立内存数据库，不修改本地论文或调用翻译服务。"""
-import json
+"""轮询回归测试；使用独立内存数据库，不修改本地论文或调用翻译服务。"""
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from backend.app.database import Base
 from backend.app.main import app
 from backend.app.models import Paper
-from backend.app.services.translation_updates import get_translation_snapshot, stream_translation_updates
+from backend.app.services.translation_updates import get_translation_snapshot
+from backend.app.workers.translation_worker import _run_translation_job
 
 
 def snapshot(*statuses, removed_ids=None):
@@ -50,72 +51,53 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(updated["papers"][0]["translation_status"], "completed")
 
 
-class StreamTests(unittest.IsolatedAsyncioTestCase):
-    async def collect(self, snapshots):
-        request = AsyncMock()
-        request.is_disconnected.return_value = False
-        with patch("backend.app.services.translation_updates.get_translation_snapshot", side_effect=snapshots), \
-                patch("backend.app.services.translation_updates.asyncio.sleep", new_callable=AsyncMock):
-            return [event async for event in stream_translation_updates(request, [1, 2])]
+class WorkerProgressTests(unittest.TestCase):
+    def test_progress_commits_are_visible_and_completion_is_atomic(self):
+        engine = create_engine("sqlite://", poolclass=StaticPool,
+                               connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        Base.metadata.create_all(engine)
+        sessions = sessionmaker(bind=engine)
+        with sessions() as db:
+            db.add(Paper(id=1, title="论文", original_filename="test.pdf",
+                         original_pdf_path="/tmp/test.pdf", translation_status="queued"))
+            db.commit()
 
-    async def test_emits_changes_only_and_closes_after_completion(self):
-        queued = snapshot(("queued", 0))
-        translating = snapshot(("translating", 35))
-        completed = snapshot(("completed", 100))
-        events = await self.collect([queued, queued, translating, translating, completed])
-        updates = [event for event in events if event.startswith("event: papers")]
-        self.assertEqual(len(updates), 3)
-        self.assertIn('"translation_progress": 100', updates[-1])
-        self.assertTrue(events[-1].startswith("event: done"))
+        def translate(**kwargs):
+            progress = kwargs["progress_callback"]
+            for value, expected in ((35, 35), (60, 60), (46, 60), (90, 90), (100, 90)):
+                progress(value)
+                current = get_translation_snapshot([1])["papers"][0]
+                self.assertEqual(current["translation_progress"], expected)
+                self.assertEqual(current["translation_status"], "translating")
+            return "/tmp/translated.pdf"
 
-    async def test_waits_for_all_selected_tasks(self):
-        events = await self.collect([
-            snapshot(("completed", 100), ("queued", 0)),
-            snapshot(("completed", 100), ("translating", 35)),
-            snapshot(("completed", 100), ("completed", 100)),
-        ])
-        self.assertEqual(sum(event.startswith("event: papers") for event in events), 3)
-        self.assertTrue(events[-1].startswith("event: done"))
-
-    async def test_failure_is_delivered_before_close(self):
-        failed = snapshot(("failed", 0))
-        failed["papers"][0]["translation_error"] = "翻译服务错误"
-        events = await self.collect([snapshot(("translating", 35)), failed])
-        self.assertIn("翻译服务错误", events[-2])
-        self.assertTrue(events[-1].startswith("event: done"))
-
-    async def test_deleted_task_is_delivered_before_close(self):
-        events = await self.collect([snapshot(("queued", 0)), snapshot(removed_ids=[1])])
-        self.assertIn('"removed_ids": [1]', events[-2])
-        self.assertTrue(events[-1].startswith("event: done"))
-
-    async def test_client_disconnect_stops_database_reads(self):
-        request = AsyncMock()
-        request.is_disconnected.side_effect = [False, True]
-        with patch("backend.app.services.translation_updates.get_translation_snapshot",
-                   return_value=snapshot(("translating", 35))) as read, \
-                patch("backend.app.services.translation_updates.asyncio.sleep", new_callable=AsyncMock):
-            events = [event async for event in stream_translation_updates(request, [1])]
-        self.assertEqual(read.call_count, 1)
-        self.assertEqual(len(events), 2)
+        with patch("backend.app.workers.translation_worker.SessionLocal", sessions), \
+                patch("backend.app.services.translation_updates.SessionLocal", sessions), \
+                patch("backend.app.workers.translation_worker.translation_service.translate", side_effect=translate):
+            _run_translation_job(1)
+            current = get_translation_snapshot([1])["papers"][0]
+            self.assertEqual(current["translation_status"], "completed")
+            self.assertEqual(current["translation_progress"], 100)
+            with sessions() as db:
+                self.assertEqual(db.get(Paper, 1).translated_pdf_path, "/tmp/translated.pdf")
 
 
-class RouteTests(unittest.TestCase):
-    def test_sse_route_headers_and_final_snapshot(self):
-        final = snapshot(("completed", 100))
-        with patch("backend.app.services.translation_updates.get_translation_snapshot", return_value=final) as read:
-            response = TestClient(app).get("/api/papers/events?ids=1&ids=1&ids=2")
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("text/event-stream", response.headers["content-type"])
-        self.assertEqual(response.headers["cache-control"], "no-cache")
-        self.assertEqual(response.headers["x-accel-buffering"], "no")
-        read.assert_called_once_with([1, 2])
-        self.assertIn("event: done", response.text)
-        data = next(line[6:] for line in response.text.splitlines() if line.startswith("data: "))
-        self.assertEqual(json.loads(data), final)
+class RouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_poll_returns_latest_snapshot_and_deduplicates_ids(self):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for status, progress in (("queued", 0), ("translating", 57), ("completed", 100), ("failed", 0)):
+                current = snapshot((status, progress), removed_ids=[2])
+                with patch("backend.app.api.papers.get_translation_snapshot", return_value=current) as read:
+                    response = await client.get("/api/papers/updates?ids=1&ids=1&ids=2")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), current)
+                self.assertIn("application/json", response.headers["content-type"])
+                read.assert_called_once_with([1, 2])
 
-    def test_missing_ids_is_rejected_without_opening_stream(self):
-        response = TestClient(app).get("/api/papers/events")
+    async def test_missing_ids_is_rejected(self):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/papers/updates")
         self.assertEqual(response.status_code, 422)
 
 

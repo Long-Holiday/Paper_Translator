@@ -26,3 +26,63 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* 阅读器的装饰集中在控件，论文区域保持白底无边框。 */
+.reader-toolbar {
+  box-shadow: 0 1px 6px rgb(15 23 42 / 3%);
+}
+
+.reader-control-group {
+  background: #f8fafc;
+  box-shadow: inset 0 0 0 1px rgb(15 23 42 / 5%);
+}
+
+.reader-control {
+  transition: background-color 150ms ease, box-shadow 150ms ease, color 150ms ease;
+}
+
+.reader-control:hover:not(:disabled) {
+  background-color: #f1f5f9;
+}
+
+.reader-control:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}
+
+.reader-control:active:not(:disabled) {
+  background-color: #e2e8f0;
+}
+
+.reader-delete:hover:not(:disabled) {
+  color: #be123c;
+  background-color: #fff1f2;
+}
+
+.reader-shortcut {
+  min-width: 19px;
+  padding: 0 4px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 17px;
+}
+
+.reader-page-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.reader-page-input::-webkit-inner-spin-button,
+.reader-page-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-control {
+    transition: none;
+  }
+}

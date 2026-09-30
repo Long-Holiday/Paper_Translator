@@ -34,7 +34,7 @@ export const LibraryPage: React.FC = () => {
     fetchPapers(search);
   }, [search, fetchPapers]);
 
-  // 活跃任务通过一个长连接接收更新，进度变化不会重新请求完整列表。
+  // 活跃任务每秒批量查询进度，任务结束后自动停止轮询。
   useTranslationUpdates(papers, ({ papers: updated, removed_ids }) => {
     const updates = new Map(updated.map((paper) => [paper.id, paper]));
     setPapers((prev) => prev
@@ -47,7 +47,7 @@ export const LibraryPage: React.FC = () => {
       await startTranslate(id);
       setPapers((prev) =>
         prev.map((p) =>
-          p.id === id ? { ...p, translation_status: 'queued', translation_error: null } : p
+          p.id === id ? { ...p, translation_status: 'queued', translation_progress: 0, translation_error: null } : p
         )
       );
     } catch (err: any) {

@@ -7,19 +7,45 @@ export interface PaperUpdates {
   removed_ids: number[];
 }
 
-export function subscribeTranslationUpdates(
+export function pollTranslationUpdates(
   ids: number[],
   onUpdate: (updates: PaperUpdates) => void
 ): () => void {
   const params = new URLSearchParams();
   ids.forEach((id) => params.append('ids', String(id)));
-  const source = new EventSource(`${API_BASE}/papers/events?${params}`);
-  source.addEventListener('papers', (event) => {
-    onUpdate(JSON.parse((event as MessageEvent).data));
-  });
-  source.addEventListener('done', () => source.close());
-  // 连接中断时由 EventSource 自动重连；页面退出时显式关闭。
-  return () => source.close();
+  const controller = new AbortController();
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const poll = async () => {
+    if (stopped) return;
+    try {
+      const response = await fetch(`${API_BASE}/papers/updates?${params}`, {
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error('获取翻译进度失败');
+      const updates: PaperUpdates = await response.json();
+      if (stopped) return;
+      onUpdate(updates);
+      if (!updates.papers.some((paper) =>
+        paper.translation_status === 'queued' || paper.translation_status === 'translating'
+      )) {
+        stopped = true;
+      }
+    } catch (error) {
+      if (!stopped) console.warn('获取翻译进度失败，将自动重试:', error);
+    }
+    // 上一次请求完成后再计时，慢请求不会堆积。
+    if (!stopped) timer = setTimeout(poll, 1000);
+  };
+
+  void poll();
+  return () => {
+    stopped = true;
+    if (timer !== undefined) clearTimeout(timer);
+    controller.abort();
+  };
 }
 
 export async function getPapers(search?: string): Promise<Paper[]> {

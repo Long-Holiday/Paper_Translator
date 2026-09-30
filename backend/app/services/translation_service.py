@@ -1,9 +1,13 @@
 import os
 import shutil
 import traceback
+import tempfile
+
+import fitz
 from pathlib import Path
 from typing import Optional, Callable
 from backend.app.config import load_config
+from backend.app.services.pdf_compat import pdf2zh_number_compatibility, validate_pdf
 
 
 class TranslationService:
@@ -76,7 +80,11 @@ class TranslationService:
             progress_callback(15, "正在加载文档版面分析模型...")
 
         try:
-            from pdf2zh.high_level import translate as do_translate
+            with fitz.open(source_pdf) as original:
+                expected_pages = len(original)
+                if original.needs_pass or not expected_pages:
+                    raise ValueError("PDF 文件加密或没有页面")
+            from pdf2zh import high_level
 
             # 获取版面模型（关键修复：必须向 translate 显式传入 model 参数）
             model = self.get_layout_model()
@@ -84,38 +92,48 @@ class TranslationService:
             if progress_callback:
                 progress_callback(35, f"调用翻译引擎 ({full_service}) 翻译中...")
 
-            # 运行翻译
-            results = do_translate(
-                files=[str(source_pdf)],
-                output=str(output_dir),
-                lang_in=lang_in,
-                lang_out=lang_out,
-                service=full_service,
-                thread=thread,
-                envs=envs,
-                model=model,
-            )
+            last_progress = 35
 
-            if progress_callback:
-                progress_callback(85, "正在生成中文排版 PDF...")
+            def on_engine_progress(progress):
+                nonlocal last_progress
+                # pdf2zh 在开始处理每页之前更新 tqdm 并调用 callback，
+                # n-1 才是已完成页数；预留后续排版、校验和发布所需进度。
+                total = progress.total or expected_pages
+                completed = max(0, min(progress.n - 1, total))
+                percent = 35 + int(45 * completed / total)
+                if progress_callback and percent > last_progress:
+                    last_progress = percent
+                    progress_callback(percent, f"已翻译 {completed}/{total} 页，正在处理下一页...")
 
-            # results 返回的是 [(str(file_mono), str(file_dual))]
-            if results and len(results) > 0:
-                file_mono, file_dual = results[0]
-                mono_path = Path(file_mono)
-                if mono_path.exists():
-                    shutil.copy2(mono_path, target_final_pdf)
-                elif Path(file_dual).exists():
-                    shutil.copy2(Path(file_dual), target_final_pdf)
-                else:
-                    raise FileNotFoundError("未找到生成的翻译 PDF 文件")
-            else:
-                # 备用方案：在 output_dir 寻找 *-mono.pdf
-                mono_candidates = list(output_dir.glob("*-mono.pdf"))
-                if mono_candidates:
-                    shutil.copy2(mono_candidates[0], target_final_pdf)
-                else:
+            # 隔离输出，避免使用旧译文；复制输入，防止 pdf2zh 删除 /tmp 下的源文件。
+            with tempfile.TemporaryDirectory(prefix=".translation-", dir=output_dir) as staging:
+                staging = Path(staging)
+                staged_source = staging / source_pdf.name
+                shutil.copy2(source_pdf, staged_source)
+                with pdf2zh_number_compatibility(high_level):
+                    results = high_level.translate(
+                        files=[str(staged_source)],
+                        output=str(staging),
+                        lang_in=lang_in,
+                        lang_out=lang_out,
+                        service=full_service,
+                        thread=thread,
+                        envs=envs,
+                        model=model,
+                        callback=on_engine_progress,
+                    )
+
+                if progress_callback:
+                    progress_callback(85, "正在生成中文排版 PDF...")
+
+                mono_path = Path(results[0][0]) if results else staging / f"{staged_source.stem}-mono.pdf"
+                if not mono_path.is_file():
                     raise FileNotFoundError("翻译完成但未找到生成的中文 PDF 文件")
+
+                if progress_callback:
+                    progress_callback(90, "正在校验中文排版 PDF...")
+                validate_pdf(mono_path, expected_pages=expected_pages)
+                mono_path.replace(target_final_pdf)
 
             if progress_callback:
                 progress_callback(100, "翻译已完成")

@@ -91,7 +91,7 @@ export const PaperCard: React.FC<Props> = ({ paper, onTranslate, onDelete }) => 
           <div className="w-full bg-slate-100 rounded-full h-1.5 mb-3 overflow-hidden">
             <div
               className="bg-sky-500 h-1.5 rounded-full transition-all duration-300 animate-pulse"
-              style={{ width: `${Math.max(paper.translation_progress, 15)}%` }}
+              style={{ width: `${Math.max(0, Math.min(100, paper.translation_progress))}%` }}
             />
           </div>
         )}

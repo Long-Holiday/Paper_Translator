@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { PaperUpdates, subscribeTranslationUpdates } from '../api/papers';
+import { PaperUpdates, pollTranslationUpdates } from '../api/papers';
 import { Paper } from '../types/paper';
 
 export function useTranslationUpdates(
@@ -19,7 +19,7 @@ export function useTranslationUpdates(
 
   useEffect(() => {
     if (!activeIds) return;
-    return subscribeTranslationUpdates(
+    return pollTranslationUpdates(
       activeIds.split(',').map(Number),
       (updates) => callback.current(updates)
     );
