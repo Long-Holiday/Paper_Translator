@@ -21,10 +21,17 @@ def test_full_integration():
     print("[1] 测试数据库初始化...")
     init_db()
 
-    print("[2] 测试健康检查 /api/health...")
+    print("[2] 测试健康检查 /api/health 与登录认证...")
     res = client.get("/api/health")
     assert res.status_code == 200, res.text
     print("  -> 健康检查正常")
+
+    # 登录获取 token (默认初始密码 admin123)
+    login_res = client.post("/api/auth/login", json={"password": "admin123"})
+    assert login_res.status_code == 200
+    token = login_res.json()["token"]
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    print("  -> 访问密码验证通过并设置认证请求头")
 
     print("[3] 测试前端静态页面托管与 SPA Fallback...")
     res_root = client.get("/")
@@ -39,6 +46,8 @@ def test_full_integration():
 
     print("[4] 测试导入论文与元数据提取...")
     pdf_path = project_root / "ICLR-2024-dformer-rethinking-rgbd-representation-learning-for-semantic-segmentation-Paper-Conference.pdf"
+    if not pdf_path.exists():
+        pdf_path = project_root / "data" / "papers" / "1" / "original.pdf"
     assert pdf_path.exists(), "测试 PDF 文件不存在"
 
     with open(pdf_path, "rb") as f:

@@ -1,7 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+// @ts-ignore Vite resolves the PDF worker as a local build asset.
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { attachWheelPageNavigation } from './wheelPageNavigation';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface Props {
   url: string;
@@ -67,6 +71,9 @@ export const PdfViewer: React.FC<Props> = ({
 
     const loadingTask = pdfjsLib.getDocument({
       url,
+      disableAutoFetch: true,
+      disableStream: true,
+      rangeChunkSize: 64 * 1024,
       cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/',
       cMapPacked: true,
     });

@@ -5,6 +5,7 @@ from fastapi import UploadFile, HTTPException
 from sqlalchemy.orm import Session
 from backend.app.config import PAPERS_DIR
 from backend.app.models import Paper
+from backend.app.resources import get_resource_limits
 from backend.app.services.pdf_service import PdfService
 
 
@@ -28,6 +29,10 @@ class PaperService:
     async def create_paper(db: Session, file: UploadFile) -> Paper:
         if not file.filename or not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="仅支持上传 PDF 格式文件")
+        limits = get_resource_limits()
+        max_bytes = limits.max_upload_mb * 1024 * 1024
+        if file.size is not None and file.size > max_bytes:
+            raise HTTPException(status_code=413, detail=f"PDF 不能超过 {limits.max_upload_mb} MB")
 
         # 1. 先在数据库创建记录以获取唯一自增 ID
         paper = Paper(
@@ -50,17 +55,26 @@ class PaperService:
 
         # 3. 流式写入文件，避免大文件一次性进内存
         try:
+            written = 0
             with open(original_pdf_path, "wb") as buffer:
                 while content := await file.read(1024 * 1024):  # 1MB 块
+                    written += len(content)
+                    if written > max_bytes:
+                        raise HTTPException(status_code=413, detail=f"PDF 不能超过 {limits.max_upload_mb} MB")
                     buffer.write(content)
+            # Reject oversized documents before they can enter the worker queue.
+            title, page_count = PdfService.extract_pdf_info(original_pdf_path, file.filename)
+            if page_count > limits.max_pdf_pages:
+                raise HTTPException(status_code=413, detail=f"PDF 不能超过 {limits.max_pdf_pages} 页")
         except Exception as e:
             shutil.rmtree(paper_dir, ignore_errors=True)
             db.delete(paper)
             db.commit()
+            if isinstance(e, HTTPException):
+                raise
             raise HTTPException(status_code=500, detail=f"保存 PDF 文件失败: {str(e)}")
-
-        # 4. 解析 PDF 标题和页数
-        title, page_count = PdfService.extract_pdf_info(original_pdf_path, file.filename)
+        finally:
+            await file.close()
 
         paper.title = title
         paper.original_pdf_path = str(original_pdf_path)
@@ -75,6 +89,8 @@ class PaperService:
         paper = db.query(Paper).filter(Paper.id == paper_id).first()
         if not paper:
             raise HTTPException(status_code=404, detail="论文不存在")
+        if paper.translation_status in ("queued", "translating"):
+            raise HTTPException(status_code=409, detail="请等待翻译任务完成后再删除论文")
 
         # 1. 删除文件目录
         paper_dir = PAPERS_DIR / str(paper_id)

@@ -1,0 +1,35 @@
+services:
+  paper-translator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: paper-translator:latest
+    container_name: paper-translator
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    environment:
+      - NO_BROWSER=1
+    # Includes API + spawned translation process. Leave room for the host OS.
+    mem_limit: ${PT_CONTAINER_MEMORY:-768m}
+    cpus: ${PT_CONTAINER_CPUS:-0.75}
+    pids_limit: 96
+    init: true
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 60s
+      timeout: 5s
+      start_period: 30s
+      retries: 3

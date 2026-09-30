@@ -42,7 +42,7 @@ export const ConfigModal: React.FC<Props> = ({ isOpen, onClose }) => {
       const payload: Partial<TranslationConfig> = {
         model: config.model,
         base_url: config.base_url,
-        thread: Number(config.thread) || 4,
+        thread: Number(config.thread) || 1,
       };
       if (config.service) {
         payload.service = config.service;
@@ -140,8 +140,8 @@ export const ConfigModal: React.FC<Props> = ({ isOpen, onClose }) => {
               <input
                 type="number"
                 min="1"
-                max="16"
-                value={config?.thread || 4}
+                max={config?.thread_limit || 16}
+                value={config?.thread || 1}
                 onChange={(e) => setConfig(prev => prev ? { ...prev, thread: parseInt(e.target.value) || 1 } : null)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-sky-500 focus:outline-none"
               />

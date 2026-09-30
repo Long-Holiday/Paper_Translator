@@ -1,4 +1,5 @@
 import { Paper, TranslationConfig } from '../types/paper';
+import { authFetch, getToken } from './auth';
 
 const API_BASE = '/api';
 
@@ -13,6 +14,10 @@ export function subscribeTranslationUpdates(
 ): () => void {
   const params = new URLSearchParams();
   ids.forEach((id) => params.append('ids', String(id)));
+  const token = getToken();
+  if (token) {
+    params.append('token', token);
+  }
   const source = new EventSource(`${API_BASE}/papers/events?${params}`);
   source.addEventListener('papers', (event) => {
     onUpdate(JSON.parse((event as MessageEvent).data));
@@ -27,13 +32,13 @@ export async function getPapers(search?: string): Promise<Paper[]> {
   if (search && search.trim()) {
     url.searchParams.set('search', search.trim());
   }
-  const res = await fetch(url.toString());
+  const res = await authFetch(url.toString());
   if (!res.ok) throw new Error('获取论文列表失败');
   return res.json();
 }
 
 export async function getPaper(id: number): Promise<Paper> {
-  const res = await fetch(`${API_BASE}/papers/${id}`);
+  const res = await authFetch(`${API_BASE}/papers/${id}`);
   if (!res.ok) throw new Error('获取论文详情失败');
   return res.json();
 }
@@ -42,7 +47,7 @@ export async function uploadPaper(file: File): Promise<Paper> {
   const formData = new FormData();
   formData.append('file', file);
 
-  const res = await fetch(`${API_BASE}/papers`, {
+  const res = await authFetch(`${API_BASE}/papers`, {
     method: 'POST',
     body: formData,
   });
@@ -54,14 +59,17 @@ export async function uploadPaper(file: File): Promise<Paper> {
 }
 
 export async function deletePaper(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/papers/${id}`, {
+  const res = await authFetch(`${API_BASE}/papers/${id}`, {
     method: 'DELETE',
   });
-  if (!res.ok) throw new Error('删除论文失败');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: '删除论文失败' }));
+    throw new Error(err.detail || '删除论文失败');
+  }
 }
 
 export async function startTranslate(id: number): Promise<{ status: string; message?: string }> {
-  const res = await fetch(`${API_BASE}/papers/${id}/translate`, {
+  const res = await authFetch(`${API_BASE}/papers/${id}/translate`, {
     method: 'POST',
   });
   if (!res.ok) {
@@ -72,7 +80,7 @@ export async function startTranslate(id: number): Promise<{ status: string; mess
 }
 
 export async function updateReadingPosition(id: number, page: number): Promise<Paper> {
-  const res = await fetch(`${API_BASE}/papers/${id}/reading-position`, {
+  const res = await authFetch(`${API_BASE}/papers/${id}/reading-position`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -84,21 +92,27 @@ export async function updateReadingPosition(id: number, page: number): Promise<P
 }
 
 export function getOriginalPdfUrl(id: number): string {
-  return `${API_BASE}/papers/${id}/original`;
+  const token = getToken();
+  return token
+    ? `${API_BASE}/papers/${id}/original?token=${encodeURIComponent(token)}`
+    : `${API_BASE}/papers/${id}/original`;
 }
 
 export function getTranslatedPdfUrl(id: number): string {
-  return `${API_BASE}/papers/${id}/translated`;
+  const token = getToken();
+  return token
+    ? `${API_BASE}/papers/${id}/translated?token=${encodeURIComponent(token)}`
+    : `${API_BASE}/papers/${id}/translated`;
 }
 
 export async function getTranslationConfig(): Promise<TranslationConfig> {
-  const res = await fetch(`${API_BASE}/translation/config`);
+  const res = await authFetch(`${API_BASE}/translation/config`);
   if (!res.ok) throw new Error('获取翻译设置失败');
   return res.json();
 }
 
 export async function updateTranslationConfig(cfg: Partial<TranslationConfig>): Promise<void> {
-  const res = await fetch(`${API_BASE}/translation/config`, {
+  const res = await authFetch(`${API_BASE}/translation/config`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',

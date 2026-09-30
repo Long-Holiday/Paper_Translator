@@ -1,0 +1,34 @@
+[Unit]
+Description=Paper Translator Web Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/Paper_Translator
+ExecStart=/opt/Paper_Translator/.venv/bin/python start.py --no-browser --skip-frontend-build
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=NO_BROWSER=1
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+MemoryHigh=650M
+MemoryMax=768M
+CPUQuota=75%
+TasksMax=96
+TimeoutStopSec=15
+# Prefer killing a translation child to killing the API when memory runs out.
+OOMPolicy=continue
+
+# 访问密码配置（在此处直接写死您的自用密码）
+Environment=PAPER_TRANSLATOR_PASSWORD=your_secure_password
+
+# 日志输出配置
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

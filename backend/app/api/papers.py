@@ -4,13 +4,18 @@ from fastapi import APIRouter, Depends, UploadFile, File, Query, HTTPException, 
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
+from backend.app.auth import get_current_user
 from backend.app.database import get_db
 from backend.app.schemas import PaperResponse, ReadingPositionUpdate, TranslateResponse
 from backend.app.services.paper_service import PaperService
 from backend.app.services.translation_updates import stream_translation_updates
-from backend.app.workers.translation_worker import enqueue_translation
+from backend.app.workers.translation_worker import enqueue_translation, TranslationQueueFull
 
-router = APIRouter(prefix="/papers", tags=["papers"])
+router = APIRouter(
+    prefix="/papers",
+    tags=["papers"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.get("", response_model=List[PaperResponse])
@@ -61,7 +66,10 @@ def start_translate(paper_id: int, db: Session = Depends(get_db)):
     if paper.translation_status in ["queued", "translating"]:
         return TranslateResponse(status="already_running", message="该论文已在翻译中或等待队列中")
 
-    success = enqueue_translation(paper_id)
+    try:
+        success = enqueue_translation(paper_id)
+    except TranslationQueueFull as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "30"})
     if not success:
         return TranslateResponse(status="already_running", message="任务已在处理队列中")
 

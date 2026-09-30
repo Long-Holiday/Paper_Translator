@@ -1,92 +1,112 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
 from backend.app.database import SessionLocal
 from backend.app.models import Paper
-from backend.app.services.translation_service import TranslationService
+from backend.app.resources import get_resource_limits
+from backend.app.services.translation_process import translate_isolated
 
-# 本地单用户推荐 max_workers=1，避免 CPU/GPU/网络资源过载
-executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="translation_worker")
-translation_service = TranslationService()
-
-# 保护线程安全的排队与状态跟踪
+# One lightweight coordinator; heavy imports and inference live in a child.
+executor = None
 _lock = threading.Lock()
 _active_paper_ids = set()
+_stop_event = threading.Event()
+
+
+class TranslationQueueFull(Exception):
+    pass
+
+
+def start_worker():
+    global executor
+    with _lock:
+        _stop_event.clear()
+        if executor is None:
+            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="translation_worker")
+
+
+def shutdown_worker():
+    global executor
+    _stop_event.set()
+    with _lock:
+        current, executor = executor, None
+    if current is not None:
+        current.shutdown(wait=True, cancel_futures=True)
+    with SessionLocal() as db:
+        db.query(Paper).filter(Paper.translation_status.in_(["translating", "queued"])).update({
+            Paper.translation_status: "failed",
+            Paper.translation_error: "服务已停止，请重新翻译",
+            Paper.translation_progress: 0,
+        }, synchronize_session=False)
+        db.commit()
+    with _lock:
+        _active_paper_ids.clear()
+
+
+def _update_paper(paper_id, **values):
+    with SessionLocal() as db:
+        paper = db.get(Paper, paper_id)
+        if paper:
+            for key, value in values.items():
+                setattr(paper, key, value)
+            db.commit()
 
 
 def _run_translation_job(paper_id: int):
-    db = SessionLocal()
     try:
-        paper = db.query(Paper).filter(Paper.id == paper_id).first()
-        if not paper:
-            return
-
-        paper.translation_status = "translating"
-        paper.translation_progress = 10
-        paper.translation_error = None
-        db.commit()
-
-        source_pdf = Path(paper.original_pdf_path)
-        output_dir = source_pdf.parent
-
-        def on_progress(percent: int, message: str = ""):
-            nonlocal paper_id
-            job_db = SessionLocal()
-            try:
-                p = job_db.query(Paper).filter(Paper.id == paper_id).first()
-                if p:
-                    p.translation_progress = percent
-                    job_db.commit()
-            finally:
-                job_db.close()
-
-        # 调用翻译服务
-        final_pdf = translation_service.translate(
-            source_pdf=source_pdf,
-            output_dir=output_dir,
-            progress_callback=on_progress,
-        )
-
-        paper = db.query(Paper).filter(Paper.id == paper_id).first()
-        if paper:
-            paper.translated_pdf_path = str(final_pdf)
-            paper.translation_status = "completed"
-            paper.translation_progress = 100
+        # Do not hold a SQLite connection throughout a lengthy translation.
+        with SessionLocal() as db:
+            paper = db.get(Paper, paper_id)
+            if not paper:
+                return
+            source_pdf = Path(paper.original_pdf_path)
+            paper.translation_status = "translating"
+            paper.translation_progress = 10
             paper.translation_error = None
             db.commit()
 
-    except Exception as e:
-        paper = db.query(Paper).filter(Paper.id == paper_id).first()
-        if paper:
-            paper.translation_status = "failed"
-            paper.translation_error = str(e)
-            paper.translation_progress = 0
-            db.commit()
+        def on_progress(percent, message=""):
+            _update_paper(paper_id, translation_progress=percent)
+
+        final_pdf = translate_isolated(source_pdf, source_pdf.parent, on_progress, _stop_event)
+        _update_paper(paper_id, translated_pdf_path=str(final_pdf),
+                      translation_status="completed", translation_progress=100,
+                      translation_error=None)
+    except Exception as exc:
+        _update_paper(paper_id, translation_status="failed", translation_progress=0,
+                      translation_error=str(exc))
     finally:
         with _lock:
             _active_paper_ids.discard(paper_id)
-        db.close()
 
 
 def enqueue_translation(paper_id: int) -> bool:
-    """
-    将论文翻译任务提交至后台线程池
-    """
+    global executor
+    limits = get_resource_limits()
     with _lock:
         if paper_id in _active_paper_ids:
-            return False  # 已在队列或正在执行中
+            return False
+        if _stop_event.is_set():
+            raise TranslationQueueFull("服务正在停止，请稍后重试")
+        if len(_active_paper_ids) >= limits.max_pending_tasks:
+            raise TranslationQueueFull(f"最多允许 {limits.max_pending_tasks} 个运行或排队任务，请等待完成")
         _active_paper_ids.add(paper_id)
-
-    db = SessionLocal()
-    try:
-        paper = db.query(Paper).filter(Paper.id == paper_id).first()
-        if paper:
-            paper.translation_status = "queued"
-            paper.translation_progress = 0
-            paper.translation_error = None
-            db.commit()
-    finally:
-        db.close()
-
-    executor.submit(_run_translation_job, paper_id)
+        try:
+            with SessionLocal() as db:
+                paper = db.get(Paper, paper_id)
+                if not paper:
+                    _active_paper_ids.discard(paper_id)
+                    return False
+                paper.translation_status = "queued"
+                paper.translation_progress = 0
+                paper.translation_error = None
+                db.commit()
+            if executor is None:
+                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="translation_worker")
+            executor.submit(_run_translation_job, paper_id)
+        except Exception:
+            _active_paper_ids.discard(paper_id)
+            _update_paper(paper_id, translation_status="failed", translation_error="提交任务失败，请重试")
+            raise
     return True

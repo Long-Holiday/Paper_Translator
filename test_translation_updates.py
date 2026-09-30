@@ -100,11 +100,16 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(events), 2)
 
 
+from backend.app.auth import create_access_token
+
 class RouteTests(unittest.TestCase):
+    def setUp(self):
+        self.token = create_access_token()
+
     def test_sse_route_headers_and_final_snapshot(self):
         final = snapshot(("completed", 100))
         with patch("backend.app.services.translation_updates.get_translation_snapshot", return_value=final) as read:
-            response = TestClient(app).get("/api/papers/events?ids=1&ids=1&ids=2")
+            response = TestClient(app).get(f"/api/papers/events?ids=1&ids=1&ids=2&token={self.token}")
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/event-stream", response.headers["content-type"])
         self.assertEqual(response.headers["cache-control"], "no-cache")
@@ -115,8 +120,12 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(json.loads(data), final)
 
     def test_missing_ids_is_rejected_without_opening_stream(self):
-        response = TestClient(app).get("/api/papers/events")
+        response = TestClient(app).get(f"/api/papers/events?token={self.token}")
         self.assertEqual(response.status_code, 422)
+
+    def test_unauthorized_sse_request_rejected(self):
+        response = TestClient(app).get("/api/papers/events?ids=1")
+        self.assertEqual(response.status_code, 401)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,14 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import ts from 'typescript';
 
-const source = await readFile(new URL('../src/api/papers.ts', import.meta.url), 'utf8');
+const authSource = await readFile(new URL('../src/api/auth.ts', import.meta.url), 'utf8');
+const authJS = ts.transpileModule(authSource, {
+  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
+}).outputText;
+const authURL = `data:text/javascript;base64,${Buffer.from(authJS).toString('base64')}`;
+const source = (await readFile(new URL('../src/api/papers.ts', import.meta.url), 'utf8'))
+  .replace("from './auth'", `from '${authURL}'`);
+globalThis.localStorage = { getItem: () => null };
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
 });

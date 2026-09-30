@@ -1,0 +1,17 @@
+.git
+.venv
+.agents
+.codex
+.aws
+.env
+.env.*
+data
+__pycache__
+**/__pycache__
+*.pyc
+*.log
+:memory:.ses
+frontend/node_modules
+frontend/dist
+config/config.yaml
+test_*.py

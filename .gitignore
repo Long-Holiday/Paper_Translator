@@ -21,3 +21,14 @@ frontend/dist/
 data/app.db
 data/papers/
 *.log
+
+# Secrets & Environment Variables (切勿上传远程仓库)
+.env
+.env.*
+*.env
+!.env.example
+
+
+# Session files
+*.ses
+:memory:*

@@ -1,8 +1,14 @@
 from typing import Dict, Any
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from backend.app.auth import get_current_user
 from backend.app.config import load_config, save_config
+from backend.app.resources import get_resource_limits
 
-router = APIRouter(prefix="/translation", tags=["translation"])
+router = APIRouter(
+    prefix="/translation",
+    tags=["translation"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.get("/config")
@@ -10,6 +16,8 @@ def get_translation_config():
     """获取当前的翻译设置（脱敏展示）"""
     cfg = load_config()
     tr_cfg = dict(cfg.get("translation", {}))
+    tr_cfg["thread_limit"] = get_resource_limits().max_translation_threads
+    tr_cfg["thread"] = max(1, min(int(tr_cfg.get("thread", 1)), tr_cfg["thread_limit"]))
     # 对 API Key 进行安全掩码展示
     key = tr_cfg.get("api_key", "")
     if key and len(key) > 8:

@@ -1,12 +1,16 @@
 from contextlib import asynccontextmanager
+import shutil
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.config import FRONTEND_DIST
+from backend.app.config import FRONTEND_DIST, PAPERS_DIR
+from backend.app.resources import get_resource_limits
+from backend.app.workers.translation_worker import start_worker, shutdown_worker
 from backend.app.database import init_db, SessionLocal
 from backend.app.models import Paper
+from backend.app.api.auth import router as auth_router
 from backend.app.api.papers import router as papers_router
 from backend.app.api.translation import router as translation_router
 
@@ -15,20 +19,29 @@ from backend.app.api.translation import router as translation_router
 async def lifespan(app: FastAPI):
     # 启动时初始化数据库
     init_db()
+    get_resource_limits()  # Validate limits before accepting requests.
 
     # 自动重置服务重启前未完成的孤儿任务，防止前端死循环轮询
     db = SessionLocal()
     try:
-        stale_papers = db.query(Paper).filter(Paper.translation_status.in_(["translating", "queued"])).all()
-        for p in stale_papers:
-            p.translation_status = "failed"
-            p.translation_error = "服务重启或上次异常中断，请点击重新翻译"
-        if stale_papers:
-            db.commit()
+        db.query(Paper).filter(Paper.translation_status.in_(["translating", "queued"])).update({
+            Paper.translation_status: "failed",
+            Paper.translation_error: "服务重启或上次异常中断，请点击重新翻译",
+        }, synchronize_session=False)
+        db.commit()
     finally:
         db.close()
 
-    yield
+    # Recover temporary files left by an OOM / forced container restart.
+    for pattern in ("*/.translation-job-*", "*/.translation-*"):
+        for directory in PAPERS_DIR.glob(pattern):
+            if directory.is_dir() and not directory.is_symlink():
+                shutil.rmtree(directory)
+    start_worker()
+    try:
+        yield
+    finally:
+        shutdown_worker()
 
 
 app = FastAPI(
@@ -48,6 +61,7 @@ app.add_middleware(
 )
 
 # 注册 API 路由
+app.include_router(auth_router, prefix="/api")
 app.include_router(papers_router, prefix="/api")
 app.include_router(translation_router, prefix="/api")
 

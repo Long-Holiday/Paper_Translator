@@ -1,5 +1,6 @@
 import os
 import sys
+import argparse
 import subprocess
 import shutil
 import time
@@ -33,10 +34,25 @@ def check_and_build_frontend():
         print("[+] 前端静态资源已就绪。")
 
 
+def should_open_browser(no_browser_arg: bool) -> bool:
+    """判断是否应当尝试打开本地浏览器"""
+    if no_browser_arg:
+        return False
+    if os.environ.get("NO_BROWSER") in ("1", "true", "True"):
+        return False
+
+    # 检测是否为典型的 Linux 无桌面环境（无 DISPLAY 且非 WSL）
+    is_wsl = "microsoft-standard" in os.uname().release.lower() or "wsl" in os.uname().release.lower()
+    if not is_wsl and sys.platform.startswith("linux"):
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            return False
+
+    return True
+
+
 def open_browser_wsl_compatible(url: str):
     """自适应 WSL、Linux、macOS、Windows 的浏览器打开逻辑"""
-    time.sleep(1.2)  # 稍微等待后端就绪
-    # 1. 检测 WSL
+    time.sleep(1.2)
     is_wsl = "microsoft-standard" in os.uname().release.lower() or "wsl" in os.uname().release.lower()
     if is_wsl:
         if shutil.which("wslview"):
@@ -58,7 +74,6 @@ def open_browser_wsl_compatible(url: str):
             except Exception:
                 pass
 
-    # 2. 普通系统
     try:
         webbrowser.open(url)
     except Exception:
@@ -66,28 +81,58 @@ def open_browser_wsl_compatible(url: str):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Paper Translator 启动程序")
+    parser.add_argument("--host", type=str, default=None, help="监听地址 (如 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=None, help="监听端口 (如 8080)")
+    parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器 (服务器环境推荐)")
+    parser.add_argument("--skip-frontend-build", action="store_true", help="使用预构建前端，缺失时直接报错")
+    args = parser.parse_args()
+
     cfg = load_config()
     server_cfg = cfg.get("server", {})
-    host = server_cfg.get("host", "0.0.0.0")
-    port = int(server_cfg.get("port", 8000))
+    auth_cfg = cfg.get("auth", {})
+
+    host = args.host or server_cfg.get("host", "0.0.0.0")
+    port = args.port or int(server_cfg.get("port", 8080))
     local_url = f"http://127.0.0.1:{port}"
 
     print("=" * 60)
-    print("  Paper Translator - 本地 Web 论文翻译阅读平台")
+    print("  Paper Translator - 本地/服务器 Web 论文翻译阅读平台")
     print("=" * 60)
 
     # 检查前端构建
-    check_and_build_frontend()
+    if args.skip_frontend_build:
+        if not (FRONTEND_DIST / "index.html").is_file():
+            parser.error("缺少 frontend/dist/index.html，请在构建机器执行 npm ci && npm run build 后上传 dist")
+    else:
+        check_and_build_frontend()
 
-    print(f"\n[*] 服务已启动，正在浏览器打开: {local_url}")
-    print(f"[*] 局域网访问地址: http://{host}:{port}")
+    print(f"\n[*] 服务正在启动中...")
+    print(f"[*] 本地访问地址: {local_url}")
+    print(f"[*] 服务器/局域网访问: http://{host}:{port}")
+
+    if auth_cfg.get("enabled", True):
+        env_pwd = os.environ.get("PAPER_TRANSLATOR_PASSWORD") or os.environ.get("AUTH_PASSWORD")
+        if env_pwd:
+            print("[*] 🔒 访问认证: 已启用（密码已从 .env / 环境变量加载）")
+        else:
+            print("[!] 🔒 访问认证: 已启用（未在 .env 中设置，使用初始临时密码: admin123）")
+            print("[!] 建议在 .env 文件中设置: PAPER_TRANSLATOR_PASSWORD=\"你的自用密码\"")
+    else:
+        print("[!] 提示: 访问认证已关闭")
+
+    env_api_key = os.environ.get("TRANSLATION_API_KEY")
+    if env_api_key:
+        print("[*] 🔑 翻译密钥: 已从 .env 文件加载成功")
+    else:
+        print("[!] 🔑 翻译密钥: 未在 .env 中检测到 TRANSLATION_API_KEY，请在 .env 中配置")
+
     print("[*] 按 Ctrl+C 可停止运行\n")
 
-    # 启动后台线程异步打开浏览器
-    import threading
-    threading.Thread(target=open_browser_wsl_compatible, args=(local_url,), daemon=True).start()
+    if should_open_browser(args.no_browser):
+        import threading
+        threading.Thread(target=open_browser_wsl_compatible, args=(local_url,), daemon=True).start()
 
-    # 启动 FastAPI 服务
     import uvicorn
     uvicorn.run("backend.app.main:app", host=host, port=port, reload=False)
 

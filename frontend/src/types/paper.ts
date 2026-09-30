@@ -22,5 +22,6 @@ export interface TranslationConfig {
   api_key_masked?: string;
   base_url?: string;
   thread: number;
+  thread_limit?: number;
   preserve_layout: boolean;
 }
