@@ -8,6 +8,10 @@ PT_ACTION="${1:-start}"
 PT_TOOLS="$PT_ROOT/.tools"
 PT_VENV="$PT_ROOT/.venv-server"
 PT_MANAGER="$PT_ROOT/deploy/server_manager.py"
+PT_TMPDIR="$PT_ROOT/data/cache/tmp"
+export TMPDIR="$PT_TMPDIR"
+export TEMP="$PT_TMPDIR"
+export TMP="$PT_TMPDIR"
 
 usage() {
     cat <<'HELP'
@@ -54,7 +58,7 @@ if [[ "$PT_ACTION" == status ]]; then
     exec "$(manager_python)" "$PT_MANAGER" status
 fi
 
-mkdir -p data/run data/logs "$PT_TOOLS"
+mkdir -p data/run data/logs "$PT_TMPDIR" "$PT_TOOLS"
 if command -v flock >/dev/null 2>&1; then
     exec 9>data/run/start.lock
     flock -n 9 || { echo '另一个启动或安装操作正在运行，请稍后重试。' >&2; exit 1; }
@@ -114,6 +118,8 @@ install_uv_and_python() {
     export UV_CACHE_DIR="$PT_ROOT/data/cache/uv"
     export UV_PYTHON_INSTALL_DIR="$PT_TOOLS/python"
     export UV_CONCURRENT_DOWNLOADS=2 UV_CONCURRENT_INSTALLS=1 UV_CONCURRENT_BUILDS=1
+    mkdir -p "$UV_CACHE_DIR" "$PT_TMPDIR"
+    export TMPDIR="$PT_TMPDIR"
     if command -v uv >/dev/null 2>&1; then
         PT_UV="$(command -v uv)"
     elif [[ -x "$PT_TOOLS/bin/uv" ]]; then
