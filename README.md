@@ -81,5 +81,21 @@ Paper_Translator/
 ├── data/                     # 本地 SQLite 数据库与论文 PDF 存储
 ├── config/config.yaml        # 翻译与服务配置文件
 ├── start.py                  # 一键启动脚本
-└── plan.md                   # 开发规划文档
+└── tests/                    # Python 回归测试与后端集成测试
 ```
+
+## 测试
+
+在项目根目录运行 Python 回归测试：
+
+```bash
+python -m unittest tests.test_translation_updates tests.test_pdf_compat -v
+```
+
+后端全流程集成测试单独运行：
+
+```bash
+python -m tests.test_backend
+```
+
+集成测试需要先构建前端，并在项目根目录准备脚本中指定的测试 PDF。该脚本会向本地数据库导入、删除测试论文并修改翻译配置。
