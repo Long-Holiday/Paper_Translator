@@ -8,7 +8,7 @@ for k in ["NO_PROXY", "no_proxy"]:
         parts = [p.strip() for p in os.environ[k].split(",") if p.strip() and p.strip() != "[::1]"]
         os.environ[k] = ",".join(parts)
 
-project_root = Path(__file__).resolve().parent
+project_root = Path(__file__).resolve().parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
