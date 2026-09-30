@@ -153,22 +153,63 @@ def running_record(project):
         return None
 
 
+def find_project_pids(project):
+    pids = []
+    marker = str(project / "start.py").encode()
+    proc = Path("/proc")
+    if not proc.exists():
+        return pids
+    for entry in proc.iterdir():
+        if entry.name.isdigit():
+            try:
+                cmd = (entry / "cmdline").read_bytes()
+                if marker in cmd:
+                    pids.append(int(entry.name))
+            except (OSError, ValueError):
+                continue
+    return pids
+
+
 def stop(project, timeout=20):
     record = running_record(project)
     state = project / "data/run/server.json"
-    if record is None:
+    pids_to_kill = set()
+    if record is not None:
+        pids_to_kill.add(int(record["pid"]))
+    # 兜底查找可能由于异常未记录在 server.json 的历史 start.py 孤儿进程
+    pids_to_kill.update(find_project_pids(project))
+
+    if not pids_to_kill:
         state.unlink(missing_ok=True)
         print("服务未运行。")
         return
-    pid = record["pid"]
-    os.kill(pid, signal.SIGTERM)
+
+    for pid in pids_to_kill:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
     deadline = time.monotonic() + timeout
-    while process_identity(pid) == record["starttime"] and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        alive = [p for p in pids_to_kill if Path(f"/proc/{p}").exists()]
+        if not alive:
+            break
         time.sleep(0.2)
-    if process_identity(pid) == record["starttime"]:
-        # Popen starts a new session, so the service owns this process group.
-        os.killpg(pid, signal.SIGKILL)
+
+    for pid in pids_to_kill:
+        if Path(f"/proc/{pid}").exists():
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
     state.unlink(missing_ok=True)
+    # 给操作系统内核释放 socket 留出短暂缓冲
+    time.sleep(0.5)
     print("服务已停止。")
 
 
@@ -187,11 +228,23 @@ def start(project, timeout=60):
     if not 1 <= port <= 65535:
         raise ValueError("服务器端口必须在 1–65535 之间")
     family, _, _, _, address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
-    with socket.socket(family, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind(address)
-        except OSError as exc:
-            raise RuntimeError(f"无法监听 {host}:{port}，请检查端口是否被占用：{exc}") from exc
+
+    # 带 SO_REUSEADDR 与 5 秒重试窗口探测端口，容纳刚停止时短暂的 TIME_WAIT 或清理延迟
+    probe_deadline = time.monotonic() + 5
+    bound = False
+    last_exc = None
+    while time.monotonic() < probe_deadline:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(address)
+                bound = True
+                break
+            except OSError as exc:
+                last_exc = exc
+                time.sleep(0.5)
+    if not bound:
+        raise RuntimeError(f"无法监听 {host}:{port}，请检查端口是否被占用：{last_exc}") from last_exc
     for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[key] = "1"
     env["NO_BROWSER"] = "1"
