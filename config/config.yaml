@@ -1,0 +1,12 @@
+translation:
+  source_language: en
+  target_language: zh
+  service: deepseek
+  model: deepseek-flash
+  api_key: sk-051105c7159b4a46a0bdcaf447504aa5
+  base_url: https://api.deepseek.com
+  thread: 4
+  preserve_layout: true
+server:
+  host: 0.0.0.0
+  port: 8000
