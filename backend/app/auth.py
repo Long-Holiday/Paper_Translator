@@ -55,7 +55,11 @@ def get_jwt_secret() -> str:
 def verify_password(plain_password: str) -> bool:
     """常数时间校验密码，防止时序攻击"""
     configured_password = get_auth_password()
-    return hmac.compare_digest(plain_password.strip(), configured_password.strip())
+    # compare_digest 的 str 参数仅支持 ASCII；UTF-8 字节支持中文等字符。
+    return hmac.compare_digest(
+        plain_password.strip().encode("utf-8"),
+        configured_password.strip().encode("utf-8"),
+    )
 
 
 def create_access_token(expires_in: int = TOKEN_EXPIRE_SECONDS) -> str:
